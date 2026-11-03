@@ -10,11 +10,4 @@ Le mesh usate dalla scena sono nella cartella `mesh`, accanto allo script. La fo
 <<<<<<< HEAD
 <<<<<<< HEAD
 ciao sobo giulia
-=======
-
 ciao sono roberto
->>>>>>> 0eb7e9123b26dbb9851068af5712f6d5ae1647be
-=======
-
-ciao sono roberto
->>>>>>> 0eb7e9123b26dbb9851068af5712f6d5ae1647be
