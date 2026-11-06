@@ -49,7 +49,6 @@ MOTOR_STEP = 0.35
 DELTA_LS_MAX = 15.0
 MOTOR_MAX_STROKE = DELTA_LS_MAX
 T_MAX = 10.0
-TENSION_RATE_MAX = 5.0
 MOTOR_SPHERE_RADIUS = 2.2
 N_COILS = 9
 N_SPRING_POINTS = 181
@@ -104,7 +103,6 @@ class HookSceneController(Sofa.Core.Controller):
         self.centerline_nodes = kwargs['centerlineNodes']
         self.offset = 0.0
         self.applied_tension = 0.0
-        self.applied_tension_rate = 0.0
         self.direction = 0
         self.simulation_time = 0.0
         self.initial_tip_y = None
@@ -190,14 +188,11 @@ class HookSceneController(Sofa.Core.Controller):
 
     def report(self):
         delta_ls = self.offset
-        dt = max(float(getattr(self, 'dt', 0.01)), 1e-6)
-        predicted_tension = self.limit_tension(self.compute_tension(delta_ls), dt)
-        predicted_tension_rate = (predicted_tension - self.applied_tension) / dt
+        tension = self.compute_tension(delta_ls)
         motor_x = MOTOR_REST_X - self.offset
         pos = self.tip.position.value[0]
         print(f"[Motore-molla-tubo] u={self.offset:.2f} mm, xmot={motor_x:.2f} mm | "
-              f"k={self.spring_k:.1f} N/mm | T={predicted_tension:.3f} N | "
-              f"dT/dt={predicted_tension_rate:+.2f} N/s | "
+              f"k={self.spring_k:.1f} N/mm | T={tension:.3f} N | "
               f"DeltaLs={delta_ls:.2f} mm | punta X={pos[0]:.2f}, Y={pos[1]:.2f} mm")
 
     def onKeypressedEvent(self, event):
@@ -231,20 +226,11 @@ class HookSceneController(Sofa.Core.Controller):
         raw_tension = self.spring_k * delta_ls + hysteresis
         return min(T_MAX, max(0.0, raw_tension))
 
-    def limit_tension(self, target_tension, dt):
-        max_change = TENSION_RATE_MAX * max(float(dt), 1e-6)
-        delta = min(max_change, max(-max_change, target_tension - self.applied_tension))
-        return self.applied_tension + delta
-
     def update_mechanics(self):
         p1 = np.asarray(self.motor.position.value[0][:3], dtype=float)
         p2 = np.asarray(self.anchor.position.value[0][:3], dtype=float)
         delta_ls = max(0.0, float(np.linalg.norm(p2 - p1)) - SPRING_REST)
-        target_tension = self.compute_tension(delta_ls)
-        previous_tension = self.applied_tension
-        frame_dt = max(float(getattr(self, 'dt', 0.01)), 1e-6)
-        self.applied_tension = self.limit_tension(target_tension, frame_dt)
-        self.applied_tension_rate = (self.applied_tension - previous_tension) / frame_dt
+        self.applied_tension = self.compute_tension(delta_ls)
         self.cable.value.value = [self.applied_tension]
         self.fem_ff.youngModulus.value = [E_LOAD_GPA * 1000.0 if self.direction >= 0
                                            else E_UNLOAD_GPA * 1000.0]
@@ -404,8 +390,8 @@ def createScene(root):
           f"molla k selezionabili={', '.join(f'{k:.1f}' for k in SPRING_K_VALUES)} N/mm "
           f"(iniziale {SPRING_K:.1f}); CableConstraint in forza, percorso guidato +Y, "
           f"offset nominale +{TENDON_OFFSET:.1f} mm")
-    print(f"Vincoli: T <= {T_MAX:.1f} N, DeltaLs <= {DELTA_LS_MAX:.1f} mm, "
-          f"|dT/dt| <= {TENSION_RATE_MAX:.1f} N/s.")
+    print(f"Vincoli manuali: T <= {T_MAX:.1f} N, DeltaLs <= {DELTA_LS_MAX:.1f} mm; "
+          "limite su dT/dt non applicato.")
     print("Controllo manuale: freccia su carica; freccia giu scarica; k cambia rigidezza; 0 reset.")
     print("Grafici in finestra separata; CSV per passo: " + os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                                        'dati_simulazione.csv'))
