@@ -51,7 +51,10 @@ TUBE_AXIAL_CELLS = 15
 TUBE_RADIAL_CELLS = 2
 TUBE_CIRCUMFERENTIAL_CELLS = 8
 MOTOR_REST_X = -SPRING_REST
-MESH_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mesh')
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(PROJECT_DIR, 'data')
+SCRIPTS_DIR = os.path.join(PROJECT_DIR, 'scripts')
+MESH_DIR = os.path.join(PROJECT_DIR, 'mesh')
 
 
 def helix(p1, p2):
@@ -102,8 +105,8 @@ class HookSceneController(Sofa.Core.Controller):
         self.plot_phase = 1
         self.simulation_time = 0.0
         self.initial_tip_y = None
-        self.csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     'dati_simulazione.csv')
+        os.makedirs(DATA_DIR, exist_ok=True)
+        self.csv_path = os.path.join(DATA_DIR, 'dati_simulazione.csv')
         self.csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow(['tempo_s', 'X_punta_mm', 'Y_punta_mm', 'DeltaY_punta_mm',
@@ -172,14 +175,14 @@ class HookSceneController(Sofa.Core.Controller):
         candidates.extend([shutil.which('pythonw.exe'), shutil.which('python')])
         python_exe = next((path for path in candidates if path and os.path.isfile(path)), None)
         if python_exe is None:
-            print('[Monitor] Python con Tkinter non trovato; avviare manualmente plot_live.py.')
+            print('[Monitor] Python con Tkinter non trovato; avviare manualmente scripts/plot_live.py.')
             return
-        plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'plot_live.py')
+        plot_script = os.path.join(SCRIPTS_DIR, 'plot_live.py')
         try:
             flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if python_exe.lower().endswith('python.exe') else 0
             self.plot_process = subprocess.Popen([python_exe, plot_script, self.csv_path],
                 cwd=os.path.dirname(plot_script), creationflags=flags)
-            print('[Monitor] Finestra grafici avviata: sei subplot aggiornati dal CSV.')
+            print('[Monitor] Finestra grafici avviata: cinque grafici aggiornati dal CSV.')
         except Exception as exc:
             print(f'[Monitor] Avvio finestra grafici non riuscito: {exc}')
 
@@ -382,6 +385,6 @@ def createScene(root):
           f"offset nominale +{TENDON_OFFSET:.1f} mm")
     print("Controllo manuale senza limite superiore su T o sull'allungamento della molla.")
     print("Controllo manuale: freccia su carica; freccia giu scarica; 0 reset.")
-    print("Grafici in finestra separata; CSV per passo: " + os.path.join(os.path.dirname(os.path.abspath(__file__)),
+    print("Grafici in finestra separata; CSV per passo: " + os.path.join(DATA_DIR,
                                                                        'dati_simulazione.csv'))
     return root

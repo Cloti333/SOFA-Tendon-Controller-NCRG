@@ -198,5 +198,5 @@ class LivePlotWindow:
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        raise SystemExit('Uso: python plot_live.py percorso\dati_simulazione.csv')
+        raise SystemExit('Uso: python scripts/plot_live.py data/dati_simulazione.csv')
     LivePlotWindow(os.path.abspath(sys.argv[1])).run()
