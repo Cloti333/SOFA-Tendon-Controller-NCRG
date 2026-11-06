@@ -1,23 +1,27 @@
-"""Finestra separata con sei grafici aggiornati leggendo il CSV di SOFA."""
+"""Finestra separata con la traiettoria X-Y e i grafici temporali di SOFA."""
 import csv
 import os
 import sys
 import tkinter as tk
-from collections import deque
 
 
-SIGNALS = (
-    ('X punta', 'X_punta_mm', 'mm', '#62b0ff'),
-    ('Y punta', 'Y_punta_mm', 'mm', '#ff7373'),
-    ('\u0394Y punta', 'DeltaY_punta_mm', 'mm', '#6fda8c'),
-    ('Attuazione motore u', 'u_mm', 'mm', '#c792ea'),
-    ('Tensione tendine T', 'T_N', 'N', '#ffad5c'),
-    ('\u0394Ls allungamento molla', 'DeltaLs_mm', 'mm', '#55d6d0'),
+CSV_COLUMNS = (
+    'tempo_s', 'X_punta_mm', 'Y_punta_mm', 'DeltaY_punta_mm', 'u_mm', 'T_N',
+    'DeltaLs_mm', 'fase_traiettoria'
 )
-PAPER_LIMITS = {
-    'T_N': (10.0, 'limite 10 N'),
-    'DeltaLs_mm': (15.0, 'limite 15 mm'),
-}
+PLOTS = (
+    ('Traiettoria punta X-Y', 'X_punta_mm', 'Y_punta_mm', 'X [mm]', 'Y [mm]',
+     '#62b0ff', True),
+    ('\u0394Y punta', 'tempo_s', 'DeltaY_punta_mm', 'tempo [s]', '\u0394Y [mm]',
+     '#6fda8c', False),
+    ('Attuazione motore u', 'tempo_s', 'u_mm', 'tempo [s]', 'u [mm]',
+     '#c792ea', False),
+    ('Tensione tendine T', 'tempo_s', 'T_N', 'tempo [s]', 'T [N]',
+     '#ffad5c', False),
+    ('\u0394Ls allungamento molla', 'tempo_s', 'DeltaLs_mm', 'tempo [s]', '\u0394Ls [mm]',
+     '#55d6d0', False),
+)
+PLOT_POSITIONS = ((0, 0, 2), (1, 0, 1), (1, 1, 1), (2, 0, 1), (2, 1, 1))
 HISTORY_SECONDS = 30.0
 POLL_MS = 500
 COLORS = {
@@ -51,15 +55,19 @@ class LivePlotWindow:
         grid = tk.Frame(self.root, bg=COLORS['window'])
         grid.pack(fill='both', expand=True, padx=8, pady=8)
         self.canvases = []
-        for index, (title, _column, unit, color) in enumerate(SIGNALS):
+        for index, plot in enumerate(PLOTS):
+            title, _x_column, _y_column, _x_label, _y_label, color, _equal_aspect = plot
             frame = tk.Frame(grid, bg=COLORS['panel'], highlightbackground=COLORS['border'],
                              highlightthickness=1)
-            frame.grid(row=index // 2, column=index % 2, sticky='nsew', padx=5, pady=5)
-            grid.rowconfigure(index // 2, weight=1)
-            grid.columnconfigure(index % 2, weight=1)
+            row, column, span = PLOT_POSITIONS[index]
+            frame.grid(row=row, column=column, columnspan=span,
+                       sticky='nsew', padx=5, pady=5)
+            grid.rowconfigure(row, weight=1)
+            for grid_column in range(2):
+                grid.columnconfigure(grid_column, weight=1)
             canvas = tk.Canvas(frame, bg=COLORS['panel'], height=205, highlightthickness=0)
             canvas.pack(fill='both', expand=True)
-            self.canvases.append((canvas, title, unit, color))
+            self.canvases.append((canvas, plot))
 
         footer = tk.Label(self.root, text=os.path.basename(csv_path), anchor='w',
                           font=('Segoe UI', 9), bg=COLORS['window'], fg=COLORS['muted'])
@@ -74,8 +82,12 @@ class LivePlotWindow:
             with open(self.csv_path, 'r', newline='', encoding='utf-8') as data_file:
                 for row in csv.DictReader(data_file):
                     try:
-                        rows.append({key: float(row[key]) for key in
-                                     ('tempo_s',) + tuple(signal[1] for signal in SIGNALS)})
+                        sample = {key: float(row[key]) for key in CSV_COLUMNS[:-1]}
+                        # CSV precedenti alla fase di carico/scarico restano leggibili.
+                        phase = row.get('fase_traiettoria',
+                                        row.get('comando_attivo', row.get('direzione', 1)))
+                        sample['fase_traiettoria'] = int(float(phase or 1))
+                        rows.append(sample)
                     except (KeyError, TypeError, ValueError):
                         continue
         except (OSError, csv.Error):
@@ -86,7 +98,8 @@ class LivePlotWindow:
         return [row for row in rows if latest_time - row['tempo_s'] <= HISTORY_SECONDS]
 
     @staticmethod
-    def draw_plot(canvas, title, unit, color, rows, column, paper_limit=None):
+    def draw_plot(canvas, plot, rows):
+        title, x_column, y_column, x_label, y_label, color, equal_aspect = plot
         canvas.delete('all')
         width = max(canvas.winfo_width(), 300)
         height = max(canvas.winfo_height(), 150)
@@ -95,66 +108,84 @@ class LivePlotWindow:
             return
         canvas.create_text(12, 10, anchor='nw', text=title,
                            font=('Segoe UI', 10, 'bold'), fill=COLORS['text'])
-        canvas.create_text(right, 10, anchor='ne', text=unit,
+        canvas.create_text(right, 10, anchor='ne', text=f'{x_label} vs {y_label}',
                            font=('Segoe UI', 9), fill=COLORS['muted'])
-        for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
-            y = bottom - fraction * (bottom - top)
-            canvas.create_line(left, y, right, y, fill=COLORS['grid'])
-        canvas.create_line(left, top, left, bottom, fill=COLORS['axis'])
-        canvas.create_line(left, bottom, right, bottom, fill=COLORS['axis'])
         if not rows:
+            for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
+                y = bottom - fraction * (bottom - top)
+                canvas.create_line(left, y, right, y, fill=COLORS['grid'])
             canvas.create_text((left + right) / 2, (top + bottom) / 2,
                                text='In attesa dei dati…', fill=COLORS['muted'])
             return
 
-        times = [row['tempo_s'] for row in rows]
-        values = [row[column] for row in rows]
-        t_min, t_max = times[0], times[-1]
-        if t_max - t_min < 1e-9:
-            t_min = max(0.0, t_max - 1.0)
-        v_min, v_max = min(values), max(values)
-        if v_max - v_min < 1e-9:
-            pad = max(abs(v_max) * 0.05, 0.05)
-            v_min, v_max = v_min - pad, v_max + pad
-        else:
-            pad = (v_max - v_min) * 0.08
-            v_min, v_max = v_min - pad, v_max + pad
+        x_values = [row[x_column] for row in rows]
+        y_values = [row[y_column] for row in rows]
+        x_min, x_max = min(x_values), max(x_values)
+        y_min, y_max = min(y_values), max(y_values)
 
-        if paper_limit is not None:
-            limit_value, limit_label = paper_limit
-            # Mantiene la soglia nel campo visibile anche prima che il segnale la raggiunga.
-            v_max = max(v_max, limit_value * 1.05)
-            limit_y = bottom - (limit_value - v_min) / (v_max - v_min) * (bottom - top)
-            canvas.create_line(left, limit_y, right, limit_y, fill=color, width=1.3,
-                               dash=(6, 4))
-            canvas.create_text(right - 4, limit_y - 3, anchor='se',
-                               text=limit_label, font=('Segoe UI', 8, 'bold'), fill=color)
+        def padded_range(low, high):
+            span = high - low
+            pad = max(span * 0.08, 0.05)
+            return low - pad, high + pad
+
+        x_min, x_max = padded_range(x_min, x_max)
+        y_min, y_max = padded_range(y_min, y_max)
+        if equal_aspect:
+            center_x = (x_min + x_max) / 2.0
+            center_y = (y_min + y_max) / 2.0
+            scale = min((right - left) / (x_max - x_min),
+                        (bottom - top) / (y_max - y_min))
+            visible_x = (right - left) / scale
+            visible_y = (bottom - top) / scale
+            x_min, x_max = center_x - visible_x / 2.0, center_x + visible_x / 2.0
+            y_min, y_max = center_y - visible_y / 2.0, center_y + visible_y / 2.0
+
+        for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
+            gx = left + fraction * (right - left)
+            gy = bottom - fraction * (bottom - top)
+            canvas.create_line(gx, top, gx, bottom, fill=COLORS['grid'])
+            canvas.create_line(left, gy, right, gy, fill=COLORS['grid'])
+            x_tick = x_min + fraction * (x_max - x_min)
+            y_tick = y_min + fraction * (y_max - y_min)
+            canvas.create_text(gx, height - 5, anchor='s', text=f'{x_tick:.3g}',
+                               font=('Segoe UI', 8), fill=COLORS['muted'])
+            canvas.create_text(left - 5, gy, anchor='e', text=f'{y_tick:.3g}',
+                               font=('Segoe UI', 8), fill=COLORS['muted'])
+        canvas.create_line(left, top, left, bottom, fill=COLORS['axis'])
+        canvas.create_line(left, bottom, right, bottom, fill=COLORS['axis'])
 
         points = []
-        for time_value, value in zip(times, values):
-            px = left + (time_value - t_min) / (t_max - t_min) * (right - left)
-            py = bottom - (value - v_min) / (v_max - v_min) * (bottom - top)
+        for x_value, y_value in zip(x_values, y_values):
+            px = left + (x_value - x_min) / (x_max - x_min) * (right - left)
+            py = bottom - (y_value - y_min) / (y_max - y_min) * (bottom - top)
             points.extend((px, py))
-        if len(points) >= 4:
+        if equal_aspect and len(points) >= 4:
+            for index in range(2, len(points), 2):
+                phase = rows[index // 2].get('fase_traiettoria', 1)
+                segment_color = color if phase >= 0 else '#ff4d9d'
+                canvas.create_line(points[index - 2], points[index - 1],
+                                   points[index], points[index + 1], fill=segment_color, width=2)
+            legend_x, legend_y = right - 155, top + 12
+            canvas.create_line(legend_x, legend_y, legend_x + 26, legend_y,
+                               fill=color, width=2)
+            canvas.create_text(legend_x + 32, legend_y, anchor='w',
+                               text='Carico \u2191', font=('Segoe UI', 8),
+                               fill=COLORS['text'])
+            canvas.create_line(legend_x, legend_y + 18, legend_x + 26, legend_y + 18,
+                               fill='#ff4d9d', width=2)
+            canvas.create_text(legend_x + 32, legend_y + 18, anchor='w',
+                               text='Scarico \u2193', font=('Segoe UI', 8),
+                               fill=COLORS['text'])
+        elif len(points) >= 4:
             canvas.create_line(*points, fill=color, width=2, smooth=False)
         elif points:
             canvas.create_oval(points[0] - 2, points[1] - 2,
                                points[0] + 2, points[1] + 2, fill=color, outline=color)
-        canvas.create_text(left - 5, top, anchor='ne', text=f'{max(values):.3g}',
-                           font=('Segoe UI', 8), fill=COLORS['muted'])
-        canvas.create_text(left - 5, bottom, anchor='se', text=f'{min(values):.3g}',
-                           font=('Segoe UI', 8), fill=COLORS['muted'])
-        canvas.create_text(left, height - 5, anchor='sw', text=f'{t_min:.1f} s',
-                           font=('Segoe UI', 8), fill=COLORS['muted'])
-        canvas.create_text(right, height - 5, anchor='se', text=f'{t_max:.1f} s',
-                           font=('Segoe UI', 8), fill=COLORS['muted'])
 
     def refresh(self):
         rows = self.read_rows()
-        for canvas, title, unit, color in self.canvases:
-            signal = next(item for item in SIGNALS if item[0] == title)
-            self.draw_plot(canvas, title, unit, color, rows, signal[1],
-                           PAPER_LIMITS.get(signal[1]))
+        for canvas, plot in self.canvases:
+            self.draw_plot(canvas, plot, rows)
         if rows:
             self.status.configure(text=f"t = {rows[-1]['tempo_s']:.2f} s  |  ultimo aggiornamento live")
         else:

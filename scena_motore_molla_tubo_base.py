@@ -2,8 +2,7 @@
 """Scena SOFA dimostrativa: motore - molla - tubo flessibile a uncino.
 
 Avvio da SOFA v26.06.00: runSofa -l SofaPython3 <percorso>\\scena_motore_molla_tubo_base.py
-Frecce su/giu: carica e scarica il motore (0.35 mm per tasto); 0: reset;
-k: cicla fra le tre rigidezze della molla.
+Frecce su/giu: carica e scarica il motore (0.35 mm per tasto); 0: reset.
 
 L'ingombro a riposo e' 100 mm: molla 20 mm, albero rigido 20 mm, tratto
 flessibile 60 mm. Il tubo cavo FEM e' lungo 80 mm. Unita' geometriche: mm.
@@ -38,7 +37,6 @@ INNER_DIAMETER = OUTER_DIAMETER - 2.0 * WALL_THICKNESS
 TENDON_OFFSET = 0.6
 SPRING_REST = 20.0
 SPRING_K = 1.2
-SPRING_K_VALUES = (0.6, 1.2, 4.8)
 SPRING_DAMPING = 1.5
 SPRING_HYSTERESIS = 0.45
 E_LOAD_GPA = 77.0
@@ -46,9 +44,6 @@ E_UNLOAD_GPA = 65.0
 POISSON_RATIO = 0.33
 MATERIAL_HYSTERESIS = 0.40
 MOTOR_STEP = 0.35
-DELTA_LS_MAX = 15.0
-MOTOR_MAX_STROKE = DELTA_LS_MAX
-T_MAX = 10.0
 MOTOR_SPHERE_RADIUS = 2.2
 N_COILS = 9
 N_SPRING_POINTS = 181
@@ -104,6 +99,7 @@ class HookSceneController(Sofa.Core.Controller):
         self.offset = 0.0
         self.applied_tension = 0.0
         self.direction = 0
+        self.plot_phase = 1
         self.simulation_time = 0.0
         self.initial_tip_y = None
         self.csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -111,7 +107,7 @@ class HookSceneController(Sofa.Core.Controller):
         self.csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow(['tempo_s', 'X_punta_mm', 'Y_punta_mm', 'DeltaY_punta_mm',
-                                 'u_mm', 'T_N', 'DeltaLs_mm'])
+                                 'u_mm', 'T_N', 'DeltaLs_mm', 'fase_traiettoria'])
         self.csv_file.flush()
 
     def move_motor(self):
@@ -163,7 +159,8 @@ class HookSceneController(Sofa.Core.Controller):
         delta_ls = self.spring_elongation()
         self.csv_writer.writerow([f'{self.simulation_time:.6f}', f'{x_tip:.6f}',
                                   f'{y_tip:.6f}', f'{delta_y:.6f}', f'{self.offset:.6f}',
-                                  f'{self.applied_tension:.6f}', f'{delta_ls:.6f}'])
+                                  f'{self.applied_tension:.6f}', f'{delta_ls:.6f}',
+                                  self.plot_phase])
         self.csv_file.flush()
     def launch_plot_window(self):
         """Avvia il viewer Tkinter esterno che legge il CSV prodotto dalla scena."""
@@ -199,18 +196,12 @@ class HookSceneController(Sofa.Core.Controller):
         key = event.get('key', '')
         if key in (Key.uparrow, 'w', 'W'):
             self.direction = 1
-            self.offset = min(MOTOR_MAX_STROKE, self.offset + MOTOR_STEP)
+            self.plot_phase = 1
+            self.offset += MOTOR_STEP
         elif key in (Key.downarrow, 's', 'S'):
             self.direction = -1
+            self.plot_phase = -1
             self.offset = max(0.0, self.offset - MOTOR_STEP)
-        elif key in ('k', 'K'):
-            current_index = min(range(len(SPRING_K_VALUES)),
-                                key=lambda i: abs(SPRING_K_VALUES[i] - self.spring_k))
-            self.spring_k = SPRING_K_VALUES[(current_index + 1) % len(SPRING_K_VALUES)]
-            self.spring_ff.spring.value = [0, 0, self.spring_k, SPRING_DAMPING, SPRING_REST]
-            print(f"[Molla] Rigidezza impostata a {self.spring_k:.1f} N/mm")
-            self.report()
-            return
         elif key in ('0', 'z', 'Z'):
             self.offset = 0.0
             self.direction = 0
@@ -224,7 +215,7 @@ class HookSceneController(Sofa.Core.Controller):
         # Legge del paper: la tensione dipende dall'allungamento e dall'isteresi;
         # il termine viscoso non viene aggiunto al comando del CableConstraint.
         raw_tension = self.spring_k * delta_ls + hysteresis
-        return min(T_MAX, max(0.0, raw_tension))
+        return max(0.0, raw_tension)
 
     def update_mechanics(self):
         p1 = np.asarray(self.motor.position.value[0][:3], dtype=float)
@@ -342,7 +333,7 @@ def createScene(root):
     cable = cable_node.addObject('CableConstraint', name='tendon',
         indices=list(range(len(cable_points))),
         pullPoint=[RIGID_LENGTH, TENDON_OFFSET, 0.0], valueType='force', value=[0.0],
-        minForce=0.0, maxForce=T_MAX, color=[0.95, 0.24, 0.20, 1.0])
+        minForce=0.0, color=[0.95, 0.24, 0.20, 1.0])
     cable_node.addObject('BarycentricMapping', name='cableMapping')
 
     cable_visual_node = tube.addChild('TendonVisualGuide')
@@ -387,12 +378,10 @@ def createScene(root):
     print(f"Lunghezza totale a riposo: {SPRING_REST:.0f} mm molla + {RIGID_LENGTH:.0f} mm albero + "
           f"{FLEX_LENGTH:.0f} mm flessibili = {SPRING_REST + RIGID_LENGTH + FLEX_LENGTH:.0f} mm")
     print(f"Nitinol: E carico/scarico={E_LOAD_GPA:.0f}/{E_UNLOAD_GPA:.0f} GPa, nu={POISSON_RATIO:.2f}; "
-          f"molla k selezionabili={', '.join(f'{k:.1f}' for k in SPRING_K_VALUES)} N/mm "
-          f"(iniziale {SPRING_K:.1f}); CableConstraint in forza, percorso guidato +Y, "
+          f"molla k={SPRING_K:.1f} N/mm fisso; CableConstraint in forza, percorso guidato +Y, "
           f"offset nominale +{TENDON_OFFSET:.1f} mm")
-    print(f"Vincoli manuali: T <= {T_MAX:.1f} N, DeltaLs <= {DELTA_LS_MAX:.1f} mm; "
-          "limite su dT/dt non applicato.")
-    print("Controllo manuale: freccia su carica; freccia giu scarica; k cambia rigidezza; 0 reset.")
+    print("Controllo manuale senza limite superiore su T o sull'allungamento della molla.")
+    print("Controllo manuale: freccia su carica; freccia giu scarica; 0 reset.")
     print("Grafici in finestra separata; CSV per passo: " + os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                                        'dati_simulazione.csv'))
     return root
