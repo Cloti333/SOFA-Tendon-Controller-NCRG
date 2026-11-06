@@ -11,6 +11,9 @@ flessibile 60 mm. Il tubo cavo FEM e' lungo 80 mm. Unita' geometriche: mm.
 import math
 import os
 import sys
+import csv
+import shutil
+import subprocess
 import numpy as np
 import Sofa
 import Sofa.Core
@@ -103,6 +106,15 @@ class HookSceneController(Sofa.Core.Controller):
         self.applied_tension = 0.0
         self.applied_tension_rate = 0.0
         self.direction = 0
+        self.simulation_time = 0.0
+        self.initial_tip_y = None
+        self.csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     'dati_simulazione.csv')
+        self.csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
+        self.csv_writer = csv.writer(self.csv_file)
+        self.csv_writer.writerow(['tempo_s', 'X_punta_mm', 'Y_punta_mm', 'DeltaY_punta_mm',
+                                 'u_mm', 'T_N', 'DeltaLs_mm'])
+        self.csv_file.flush()
 
     def move_motor(self):
         x = MOTOR_REST_X - self.offset
@@ -139,11 +151,47 @@ class HookSceneController(Sofa.Core.Controller):
         self.tip.position.value = [[float(tip_pos[0]), float(tip_pos[1]), float(tip_pos[2]),
                                     0.0, 0.0, 0.0, 1.0]]
 
+    def spring_elongation(self):
+        p1 = np.asarray(self.motor.position.value[0][:3], dtype=float)
+        p2 = np.asarray(self.anchor.position.value[0][:3], dtype=float)
+        return max(0.0, float(np.linalg.norm(p2 - p1)) - SPRING_REST)
+
+    def log_sample(self):
+        pos = self.tip.position.value[0]
+        x_tip, y_tip = float(pos[0]), float(pos[1])
+        if self.initial_tip_y is None:
+            self.initial_tip_y = y_tip
+        delta_y = y_tip - self.initial_tip_y
+        delta_ls = self.spring_elongation()
+        self.csv_writer.writerow([f'{self.simulation_time:.6f}', f'{x_tip:.6f}',
+                                  f'{y_tip:.6f}', f'{delta_y:.6f}', f'{self.offset:.6f}',
+                                  f'{self.applied_tension:.6f}', f'{delta_ls:.6f}'])
+        self.csv_file.flush()
+    def launch_plot_window(self):
+        """Avvia il viewer Tkinter esterno che legge il CSV prodotto dalla scena."""
+        python_root = os.environ.get('PYTHON_ROOT', '')
+        candidates = []
+        if python_root:
+            candidates.extend([os.path.join(python_root, 'pythonw.exe'),
+                               os.path.join(python_root, 'python.exe')])
+        candidates.extend([shutil.which('pythonw.exe'), shutil.which('python')])
+        python_exe = next((path for path in candidates if path and os.path.isfile(path)), None)
+        if python_exe is None:
+            print('[Monitor] Python con Tkinter non trovato; avviare manualmente plot_live.py.')
+            return
+        plot_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'plot_live.py')
+        try:
+            flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0) if python_exe.lower().endswith('python.exe') else 0
+            self.plot_process = subprocess.Popen([python_exe, plot_script, self.csv_path],
+                cwd=os.path.dirname(plot_script), creationflags=flags)
+            print('[Monitor] Finestra grafici avviata: sei subplot aggiornati dal CSV.')
+        except Exception as exc:
+            print(f'[Monitor] Avvio finestra grafici non riuscito: {exc}')
+
     def report(self):
         delta_ls = self.offset
         dt = max(float(getattr(self, 'dt', 0.01)), 1e-6)
-        rate = (delta_ls - getattr(self, 'previous_delta_ls', delta_ls)) / dt
-        predicted_tension = self.limit_tension(self.compute_tension(delta_ls, rate), dt)
+        predicted_tension = self.limit_tension(self.compute_tension(delta_ls), dt)
         predicted_tension_rate = (predicted_tension - self.applied_tension) / dt
         motor_x = MOTOR_REST_X - self.offset
         pos = self.tip.position.value[0]
@@ -173,13 +221,14 @@ class HookSceneController(Sofa.Core.Controller):
             self.direction = 0
         else:
             return
-        # La posizione viene applicata al prossimo passo: così la velocità
-        # manuale è stimata rispetto all'ultimo allungamento simulato.
+        # Ogni pressione cambia il comando motore di un singolo passo da 0.35 mm.
         self.report()
 
-    def compute_tension(self, delta_ls, rate):
+    def compute_tension(self, delta_ls):
         hysteresis = (SPRING_HYSTERESIS + MATERIAL_HYSTERESIS) * self.direction
-        raw_tension = self.spring_k * delta_ls + SPRING_DAMPING * rate + hysteresis
+        # Legge del paper: la tensione dipende dall'allungamento e dall'isteresi;
+        # il termine viscoso non viene aggiunto al comando del CableConstraint.
+        raw_tension = self.spring_k * delta_ls + hysteresis
         return min(T_MAX, max(0.0, raw_tension))
 
     def limit_tension(self, target_tension, dt):
@@ -191,9 +240,7 @@ class HookSceneController(Sofa.Core.Controller):
         p1 = np.asarray(self.motor.position.value[0][:3], dtype=float)
         p2 = np.asarray(self.anchor.position.value[0][:3], dtype=float)
         delta_ls = max(0.0, float(np.linalg.norm(p2 - p1)) - SPRING_REST)
-        ddelta = delta_ls - getattr(self, 'previous_delta_ls', delta_ls)
-        rate = ddelta / max(float(getattr(self, 'dt', 0.01)), 1e-6)
-        target_tension = self.compute_tension(delta_ls, rate)
+        target_tension = self.compute_tension(delta_ls)
         previous_tension = self.applied_tension
         frame_dt = max(float(getattr(self, 'dt', 0.01)), 1e-6)
         self.applied_tension = self.limit_tension(target_tension, frame_dt)
@@ -201,7 +248,6 @@ class HookSceneController(Sofa.Core.Controller):
         self.cable.value.value = [self.applied_tension]
         self.fem_ff.youngModulus.value = [E_LOAD_GPA * 1000.0 if self.direction >= 0
                                            else E_UNLOAD_GPA * 1000.0]
-        self.previous_delta_ls = delta_ls
         self.update_hook()
 
     def onAnimateBeginEvent(self, event):
@@ -215,6 +261,13 @@ class HookSceneController(Sofa.Core.Controller):
     def onAnimateEndEvent(self, event):
         self.update_hook()
         self.update_spring_points()
+        self.simulation_time += float(event.get('dt', getattr(self, 'dt', 0.01)))
+        self.log_sample()
+
+    def onSimulationEndEvent(self, event):
+        if getattr(self, 'csv_file', None) and not self.csv_file.closed:
+            self.csv_file.flush()
+            self.csv_file.close()
 
 
 def add_surface(parent, child_name, mesh_name, color):
@@ -341,6 +394,7 @@ def createScene(root):
     root.addObject(controller)
     controller.move_motor()
     controller.update_hook()
+    controller.launch_plot_window()
 
     print(f"Tubo FEM tetraedrico: {RIGID_LENGTH:.0f} mm rigidi + {FLEX_LENGTH:.0f} mm flessibili; "
           f"OD/parete/ID={OUTER_DIAMETER:.2f}/{WALL_THICKNESS:.2f}/{INNER_DIAMETER:.2f} mm")
@@ -353,4 +407,6 @@ def createScene(root):
     print(f"Vincoli: T <= {T_MAX:.1f} N, DeltaLs <= {DELTA_LS_MAX:.1f} mm, "
           f"|dT/dt| <= {TENSION_RATE_MAX:.1f} N/s.")
     print("Controllo manuale: freccia su carica; freccia giu scarica; k cambia rigidezza; 0 reset.")
+    print("Grafici in finestra separata; CSV per passo: " + os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                                       'dati_simulazione.csv'))
     return root
