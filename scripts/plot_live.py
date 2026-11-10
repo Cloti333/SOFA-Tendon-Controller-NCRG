@@ -10,18 +10,19 @@ CSV_COLUMNS = (
     'DeltaLs_mm', 'fase_traiettoria'
 )
 PLOTS = (
-    ('Traiettoria punta X-Y', 'X_punta_mm', 'Y_punta_mm', 'X [mm]', 'Y [mm]',
-     '#62b0ff', True),
     ('\u0394Y punta', 'tempo_s', 'DeltaY_punta_mm', 'tempo [s]', '\u0394Y [mm]',
-     '#6fda8c', False),
+     '#6fda8c', False, ((5.625, 'DYmax 5.625 mm'), (4.5, 'riferimento 80% = 4.5 mm'))),
     ('Attuazione motore u', 'tempo_s', 'u_mm', 'tempo [s]', 'u [mm]',
-     '#c792ea', False),
+     '#c792ea', False, ()),
     ('Tensione tendine T', 'tempo_s', 'T_N', 'tempo [s]', 'T [N]',
-     '#ffad5c', False),
+     '#ffad5c', False, ((10.0, 'Tmax 10 N'),)),
     ('\u0394Ls allungamento molla', 'tempo_s', 'DeltaLs_mm', 'tempo [s]', '\u0394Ls [mm]',
-     '#55d6d0', False),
+     '#55d6d0', False, ((15.0, '\u0394Ls max 15 mm'),)),
+    ('Velocita variazione tensione dT/dt', 'tempo_s', 'dTdt_N_s',
+     'tempo [s]', 'dT/dt [N/s]', '#ffd166', False,
+     ((5.0, 'limite +5 N/s'), (-5.0, 'limite -5 N/s'))),
 )
-PLOT_POSITIONS = ((0, 0, 2), (1, 0, 1), (1, 1, 1), (2, 0, 1), (2, 1, 1))
+PLOT_POSITIONS = ((0, 0, 1), (0, 1, 1), (1, 0, 1), (1, 1, 1), (2, 0, 2))
 HISTORY_SECONDS = 30.0
 POLL_MS = 500
 COLORS = {
@@ -39,14 +40,14 @@ class LivePlotWindow:
     def __init__(self, csv_path):
         self.csv_path = csv_path
         self.root = tk.Tk()
-        self.root.title('SOFA - Monitor motore, molla e tubo')
-        self.root.geometry('1100x790')
-        self.root.minsize(850, 620)
+        self.root.title('SOFA - Andamento temporale PI')
+        self.root.geometry('1100x900')
+        self.root.minsize(850, 700)
         self.root.configure(bg=COLORS['window'])
 
         header = tk.Frame(self.root, bg=COLORS['window'])
         header.pack(fill='x', padx=12, pady=(10, 3))
-        tk.Label(header, text='Monitor in tempo reale', font=('Segoe UI', 15, 'bold'),
+        tk.Label(header, text='Andamento temporale', font=('Segoe UI', 15, 'bold'),
                  bg=COLORS['window'], fg=COLORS['text']).pack(side='left')
         self.status = tk.Label(header, text='In attesa dei campioni SOFA…',
                                font=('Segoe UI', 9), bg=COLORS['window'], fg=COLORS['muted'])
@@ -56,7 +57,7 @@ class LivePlotWindow:
         grid.pack(fill='both', expand=True, padx=8, pady=8)
         self.canvases = []
         for index, plot in enumerate(PLOTS):
-            title, _x_column, _y_column, _x_label, _y_label, color, _equal_aspect = plot
+            title, _x_column, _y_column, _x_label, _y_label, color, _equal_aspect, _limits = plot
             frame = tk.Frame(grid, bg=COLORS['panel'], highlightbackground=COLORS['border'],
                              highlightthickness=1)
             row, column, span = PLOT_POSITIONS[index]
@@ -78,6 +79,8 @@ class LivePlotWindow:
         if not os.path.isfile(self.csv_path):
             return []
         rows = []
+        previous_time = None
+        previous_tension = None
         try:
             with open(self.csv_path, 'r', newline='', encoding='utf-8') as data_file:
                 for row in csv.DictReader(data_file):
@@ -87,7 +90,14 @@ class LivePlotWindow:
                         phase = row.get('fase_traiettoria',
                                         row.get('comando_attivo', row.get('direzione', 1)))
                         sample['fase_traiettoria'] = int(float(phase or 1))
+                        if previous_time is None or sample['tempo_s'] <= previous_time:
+                            sample['dTdt_N_s'] = 0.0
+                        else:
+                            sample['dTdt_N_s'] = ((sample['T_N'] - previous_tension) /
+                                                 (sample['tempo_s'] - previous_time))
                         rows.append(sample)
+                        previous_time = sample['tempo_s']
+                        previous_tension = sample['T_N']
                     except (KeyError, TypeError, ValueError):
                         continue
         except (OSError, csv.Error):
@@ -99,7 +109,7 @@ class LivePlotWindow:
 
     @staticmethod
     def draw_plot(canvas, plot, rows):
-        title, x_column, y_column, x_label, y_label, color, equal_aspect = plot
+        title, x_column, y_column, x_label, y_label, color, equal_aspect, limits = plot
         canvas.delete('all')
         width = max(canvas.winfo_width(), 300)
         height = max(canvas.winfo_height(), 150)
@@ -120,6 +130,8 @@ class LivePlotWindow:
 
         x_values = [row[x_column] for row in rows]
         y_values = [row[y_column] for row in rows]
+        if limits:
+            y_values += [value for value, _label in limits]
         x_min, x_max = min(x_values), max(x_values)
         y_min, y_max = min(y_values), max(y_values)
 
@@ -154,6 +166,13 @@ class LivePlotWindow:
         canvas.create_line(left, top, left, bottom, fill=COLORS['axis'])
         canvas.create_line(left, bottom, right, bottom, fill=COLORS['axis'])
 
+        for value, label in limits:
+            line_y = bottom - (value - y_min) / (y_max - y_min) * (bottom - top)
+            canvas.create_line(left, line_y, right, line_y, fill='#ff5c64',
+                               dash=(1, 3), width=1)
+            canvas.create_text(right - 4, line_y - 3, anchor='se', text=label,
+                               font=('Segoe UI', 8), fill='#ff777e')
+
         points = []
         for x_value, y_value in zip(x_values, y_values):
             px = left + (x_value - x_min) / (x_max - x_min) * (right - left)
@@ -187,7 +206,10 @@ class LivePlotWindow:
         for canvas, plot in self.canvases:
             self.draw_plot(canvas, plot, rows)
         if rows:
-            self.status.configure(text=f"t = {rows[-1]['tempo_s']:.2f} s  |  ultimo aggiornamento live")
+            rate = rows[-1].get('dTdt_N_s', 0.0)
+            self.status.configure(text=(f"t = {rows[-1]['tempo_s']:.2f} s  |  "
+                                        f"dT/dt = {rate:.2f} N/s (limite \u00b15 N/s)  |  "
+                                        f"riferimento DY = 4.5 mm (80%)"))
         else:
             self.status.configure(text='In attesa dei campioni SOFA…')
         self.root.after(POLL_MS, self.refresh)

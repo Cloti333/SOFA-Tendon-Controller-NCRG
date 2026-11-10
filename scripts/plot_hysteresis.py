@@ -63,6 +63,26 @@ def read_segments(csv_path):
     return list(segments)
 
 
+def read_xy(csv_path):
+    """Carica gli ultimi punti della traiettoria della punta nel piano X-Y."""
+    points = deque(maxlen=1600)
+    try:
+        with open(csv_path, 'r', newline='', encoding='utf-8') as data_file:
+            for row in csv.DictReader(data_file):
+                try:
+                    x = float(row['X_punta_mm'])
+                    y = float(row['Y_punta_mm'])
+                    phase_value = row.get('fase_traiettoria',
+                                           row.get('comando_attivo', row.get('direzione', 1)))
+                    phase = 1 if float(phase_value or 1) >= 0 else -1
+                    points.append((x, y, phase))
+                except (KeyError, TypeError, ValueError):
+                    continue
+    except (OSError, csv.Error):
+        return []
+    return list(points)
+
+
 def interpolate(points, x):
     """Interpola linearmente punti ordinati per u; x deve essere nel dominio."""
     if x <= points[0][0]:
@@ -117,9 +137,9 @@ class HysteresisWindow:
     def __init__(self, csv_path):
         self.csv_path = csv_path
         self.root = tk.Tk()
-        self.root.title('SOFA - Ciclo di isteresi DeltaY-u')
-        self.root.geometry('820x620')
-        self.root.minsize(600, 450)
+        self.root.title('SOFA - Traiettoria punta e ciclo di isteresi')
+        self.root.geometry('900x850')
+        self.root.minsize(650, 650)
         self.root.configure(bg=COLORS['window'])
 
         header = tk.Frame(self.root, bg=COLORS['window'])
@@ -131,15 +151,64 @@ class HysteresisWindow:
                                fg=COLORS['muted'])
         self.metric.pack(side='right')
 
+        trajectory_frame = tk.Frame(self.root, bg=COLORS['panel'],
+                         highlightbackground=COLORS['border'], highlightthickness=1)
+        trajectory_frame.pack(fill='both', expand=True, padx=10, pady=(6, 4))
+        self.xy_canvas = tk.Canvas(trajectory_frame, bg=COLORS['panel'], height=270,
+                                   highlightthickness=0)
+        self.xy_canvas.pack(fill='both', expand=True)
         frame = tk.Frame(self.root, bg=COLORS['panel'],
                          highlightbackground=COLORS['border'], highlightthickness=1)
-        frame.pack(fill='both', expand=True, padx=10, pady=8)
-        self.canvas = tk.Canvas(frame, bg=COLORS['panel'], highlightthickness=0)
+        frame.pack(fill='both', expand=True, padx=10, pady=(4, 8))
+        self.canvas = tk.Canvas(frame, bg=COLORS['panel'], height=390,
+                                highlightthickness=0)
         self.canvas.pack(fill='both', expand=True)
         tk.Label(self.root, text=os.path.basename(csv_path), anchor='w',
                  font=('Segoe UI', 9), bg=COLORS['window'], fg=COLORS['muted']).pack(
                      fill='x', padx=14, pady=(0, 8))
         self.root.after(100, self.refresh)
+
+    @staticmethod
+    def draw_trajectory(canvas, points):
+        canvas.delete('all')
+        width = max(canvas.winfo_width(), 320)
+        height = max(canvas.winfo_height(), 200)
+        left, right, top, bottom = 68, width - 24, 38, height - 42
+        canvas.create_text(12, 10, anchor='nw', text='Traiettoria punta X-Y',
+                           font=('Segoe UI', 11, 'bold'), fill=COLORS['text'])
+        canvas.create_text((left + right) / 2, height - 14, text='X [mm]',
+                           font=('Segoe UI', 9), fill=COLORS['text'])
+        canvas.create_text(18, (top + bottom) / 2, text='Y [mm]', angle=90,
+                           font=('Segoe UI', 9), fill=COLORS['text'])
+        if not points:
+            HysteresisWindow.draw_grid(canvas, left, right, top, bottom,
+                                       -1.0, 1.0, -1.0, 1.0)
+            canvas.create_text((left + right) / 2, (top + bottom) / 2,
+                               text='In attesa dei campioni SOFA…',
+                               font=('Segoe UI', 10), fill=COLORS['muted'])
+            return
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        x_min, x_max = HysteresisWindow.padded_range(min(xs), max(xs))
+        y_min, y_max = HysteresisWindow.padded_range(min(ys), max(ys))
+        # Mantiene la stessa scala sui due assi, così la geometria non si deforma.
+        scale = min((right - left) / (x_max - x_min), (bottom - top) / (y_max - y_min))
+        cx, cy = (x_min + x_max) / 2.0, (y_min + y_max) / 2.0
+        span_x, span_y = (right - left) / scale, (bottom - top) / scale
+        x_min, x_max = cx - span_x / 2.0, cx + span_x / 2.0
+        y_min, y_max = cy - span_y / 2.0, cy + span_y / 2.0
+        HysteresisWindow.draw_grid(canvas, left, right, top, bottom,
+                                   x_min, x_max, y_min, y_max)
+        coords = []
+        for x, y, _phase in points:
+            coords.extend((left + (x - x_min) / (x_max - x_min) * (right - left),
+                           bottom - (y - y_min) / (y_max - y_min) * (bottom - top)))
+        for index in range(2, len(coords), 2):
+            phase = points[index // 2][2]
+            canvas.create_line(coords[index - 2], coords[index - 1],
+                               coords[index], coords[index + 1],
+                               fill=COLORS['load'] if phase >= 0 else COLORS['unload'],
+                               width=2)
 
     @staticmethod
     def padded_range(low, high):
@@ -167,7 +236,7 @@ class HysteresisWindow:
                       (result['unload'], COLORS['unload'])]
         all_points = [point for points, _color in curves for point in points]
         if not all_points:
-            self.draw_grid(left, right, top, bottom, -1.0, 1.0, -1.0, 1.0)
+            self.draw_grid(canvas, left, right, top, bottom, -1.0, 1.0, -1.0, 1.0)
             canvas.create_text((left + right) / 2, (top + bottom) / 2,
                                text='In attesa dei campioni di carico/scarico…',
                                font=('Segoe UI', 10), fill=COLORS['muted'])
@@ -177,7 +246,7 @@ class HysteresisWindow:
                                          max(u for u, _ in all_points))
         y_min, y_max = self.padded_range(min(y for _, y in all_points),
                                          max(y for _, y in all_points))
-        self.draw_grid(left, right, top, bottom, x_min, x_max, y_min, y_max)
+        self.draw_grid(canvas, left, right, top, bottom, x_min, x_max, y_min, y_max)
 
         def xy(point):
             x_value, y_value = point
@@ -208,24 +277,26 @@ class HysteresisWindow:
             canvas.create_line(px, top, px, bottom, fill=COLORS['difference'],
                                dash=(4, 4), width=1)
 
-    def draw_grid(self, left, right, top, bottom, x_min, x_max, y_min, y_max):
+    @staticmethod
+    def draw_grid(canvas, left, right, top, bottom, x_min, x_max, y_min, y_max):
         for fraction in (0.0, 0.25, 0.5, 0.75, 1.0):
             gx = left + fraction * (right - left)
             gy = bottom - fraction * (bottom - top)
             x_tick = x_min + fraction * (x_max - x_min)
             y_tick = y_min + fraction * (y_max - y_min)
-            self.canvas.create_line(gx, top, gx, bottom, fill=COLORS['grid'])
-            self.canvas.create_line(left, gy, right, gy, fill=COLORS['grid'])
-            self.canvas.create_text(gx, bottom + 13, text=f'{x_tick:.3g}',
+            canvas.create_line(gx, top, gx, bottom, fill=COLORS['grid'])
+            canvas.create_line(left, gy, right, gy, fill=COLORS['grid'])
+            canvas.create_text(gx, bottom + 13, text=f'{x_tick:.3g}',
                                     font=('Segoe UI', 8), fill=COLORS['muted'])
-            self.canvas.create_text(left - 7, gy, anchor='e', text=f'{y_tick:.3g}',
+            canvas.create_text(left - 7, gy, anchor='e', text=f'{y_tick:.3g}',
                                     font=('Segoe UI', 8), fill=COLORS['muted'])
-        self.canvas.create_line(left, top, left, bottom, fill=COLORS['axis'])
-        self.canvas.create_line(left, bottom, right, bottom, fill=COLORS['axis'])
+        canvas.create_line(left, top, left, bottom, fill=COLORS['axis'])
+        canvas.create_line(left, bottom, right, bottom, fill=COLORS['axis'])
 
     def refresh(self):
         segments = read_segments(self.csv_path)
         result = latest_cycle(segments)
+        self.draw_trajectory(self.xy_canvas, read_xy(self.csv_path))
         self.draw(result)
         if result is None:
             self.metric.configure(text='H = in attesa del ramo di scarico',
