@@ -36,10 +36,7 @@ WALL_THICKNESS = 0.22
 INNER_DIAMETER = OUTER_DIAMETER - 2.0 * WALL_THICKNESS
 TENDON_OFFSET = 0.6
 SPRING_REST = 20.0
-# Rigidezza della molla meccanica; resta distinta dall'attuazione baseline.
 SPRING_K = 1.2
-# Rigidezza dell'attuazione diretta richiesta dalla baseline.
-DIRECT_ACTUATION_K = 50.0
 SPRING_DAMPING = 1.5
 SPRING_HYSTERESIS = 0.45
 E_LOAD_GPA = 77.0
@@ -100,7 +97,7 @@ class HookSceneController(Sofa.Core.Controller):
         self.fem_ff = self.tube.forcefield
         self.cable = kwargs['cable']
         self.spring_ff = kwargs['springFF']
-        self.actuation_k = DIRECT_ACTUATION_K
+        self.spring_k = SPRING_K
         self.centerline_nodes = kwargs['centerlineNodes']
         self.offset = 0.0
         self.applied_tension = 0.0
@@ -113,8 +110,7 @@ class HookSceneController(Sofa.Core.Controller):
         self.csv_file = open(self.csv_path, 'w', newline='', encoding='utf-8')
         self.csv_writer = csv.writer(self.csv_file)
         self.csv_writer.writerow(['tempo_s', 'X_punta_mm', 'Y_punta_mm', 'DeltaY_punta_mm',
-                                 'u_mm', 'T_N', 'DeltaLs_mm', 'fase_traiettoria',
-                                 'k_N_per_mm'])
+                                 'u_mm', 'T_N', 'DeltaLs_mm', 'fase_traiettoria'])
         self.csv_file.flush()
 
     def move_motor(self):
@@ -167,7 +163,7 @@ class HookSceneController(Sofa.Core.Controller):
         self.csv_writer.writerow([f'{self.simulation_time:.6f}', f'{x_tip:.6f}',
                                   f'{y_tip:.6f}', f'{delta_y:.6f}', f'{self.offset:.6f}',
                                   f'{self.applied_tension:.6f}', f'{delta_ls:.6f}',
-                                  self.plot_phase, f'{DIRECT_ACTUATION_K:.6f}'])
+                                  self.plot_phase])
         self.csv_file.flush()
     def launch_plot_window(self):
         """Avvia il viewer Tkinter esterno che legge il CSV prodotto dalla scena."""
@@ -205,8 +201,7 @@ class HookSceneController(Sofa.Core.Controller):
         motor_x = MOTOR_REST_X - self.offset
         pos = self.tip.position.value[0]
         print(f"[Motore-molla-tubo] u={self.offset:.2f} mm, xmot={motor_x:.2f} mm | "
-              f"k_att={self.actuation_k:.1f} N/mm | k_molla={SPRING_K:.1f} N/mm | "
-              f"T={tension:.3f} N | "
+              f"k={self.spring_k:.1f} N/mm | T={tension:.3f} N | "
               f"DeltaLs={delta_ls:.2f} mm | punta X={pos[0]:.2f}, Y={pos[1]:.2f} mm")
 
     def onKeypressedEvent(self, event):
@@ -231,7 +226,7 @@ class HookSceneController(Sofa.Core.Controller):
         hysteresis = (SPRING_HYSTERESIS + MATERIAL_HYSTERESIS) * self.direction
         # Legge del paper: la tensione dipende dall'allungamento e dall'isteresi;
         # il termine viscoso non viene aggiunto al comando del CableConstraint.
-        raw_tension = self.actuation_k * delta_ls + hysteresis
+        raw_tension = self.spring_k * delta_ls + hysteresis
         return max(0.0, raw_tension)
 
     def update_mechanics(self):

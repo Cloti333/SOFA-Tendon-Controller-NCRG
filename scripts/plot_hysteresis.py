@@ -7,7 +7,6 @@ from collections import deque
 
 
 POLL_MS = 500
-BASELINE_K_N_PER_MM = 50.0
 COLORS = {
     'window': '#11161d',
     'panel': '#1a222c',
@@ -29,7 +28,6 @@ def read_segments(csv_path):
 
     segments = deque(maxlen=4)
     current_phase = None
-    current_k = None
     current_points = []
     last_u = None
     try:
@@ -38,18 +36,16 @@ def read_segments(csv_path):
                 try:
                     u = float(row['u_mm'])
                     delta_y = float(row['DeltaY_punta_mm'])
-                    actuation_k = float(row['k_N_per_mm'])
                     phase_value = row.get('fase_traiettoria',
                                            row.get('comando_attivo', row.get('direzione', 1)))
                     phase = 1 if float(phase_value or 1) >= 0 else -1
                 except (KeyError, TypeError, ValueError):
                     continue
 
-                if phase != current_phase or actuation_k != current_k:
+                if phase != current_phase:
                     if current_points:
-                        segments.append((current_phase, current_k, current_points))
+                        segments.append((current_phase, current_points))
                     current_phase = phase
-                    current_k = actuation_k
                     current_points = []
                     last_u = None
 
@@ -61,7 +57,7 @@ def read_segments(csv_path):
                     current_points.append((u, delta_y))
                     last_u = u
         if current_points:
-            segments.append((current_phase, current_k, current_points))
+            segments.append((current_phase, current_points))
     except (OSError, csv.Error):
         return []
     return list(segments)
@@ -84,15 +80,12 @@ def interpolate(points, x):
 
 def latest_cycle(segments):
     """Restituisce l'ultima coppia consecutiva carico-scarico e il valore H."""
-    pair = next(((segments[index - 1], segments[index])
+    pair = next(((segments[index - 1][1], segments[index][1])
                  for index in range(len(segments) - 1, 0, -1)
-                 if segments[index - 1][0] == 1 and segments[index][0] == -1
-                 and segments[index - 1][1] == segments[index][1]), None)
+                 if segments[index - 1][0] == 1 and segments[index][0] == -1), None)
     if pair is None:
         return None
-    load_data, unload_data = pair
-    _load_phase, actuation_k, load_segment = load_data
-    _unload_phase, _unload_k, unload_segment = unload_data
+    load_segment, unload_segment = pair
 
     # L'interpolazione richiede u crescente; l'ordine temporale dei rami resta
     # visibile perché il viewer disegna ogni ramo come una curva distinta.
@@ -100,15 +93,13 @@ def latest_cycle(segments):
     unload = sorted({u: y for u, y in unload_segment}.items())
     if len(load) < 2 or len(unload) < 2:
         return {'load': load, 'unload': unload, 'h': None, 'gap': None,
-                'delta_y_max': max((abs(y) for _, y in load + unload), default=0.0),
-                'k': actuation_k}
+                'delta_y_max': max((abs(y) for _, y in load + unload), default=0.0)}
 
     common_min = max(load[0][0], unload[0][0])
     common_max = min(load[-1][0], unload[-1][0])
     if common_max <= common_min:
         return {'load': load, 'unload': unload, 'h': None, 'gap': None,
-                'delta_y_max': max((abs(y) for _, y in load + unload), default=0.0),
-                'k': actuation_k}
+                'delta_y_max': max((abs(y) for _, y in load + unload), default=0.0)}
 
     u_values = sorted({common_min, common_max} |
                       {u for u, _ in load if common_min <= u <= common_max} |
@@ -119,8 +110,7 @@ def latest_cycle(segments):
     max_difference, max_u = max(differences, default=(0.0, common_min))
     h_value = 100.0 * max_difference / delta_y_max if delta_y_max > 0 else None
     return {'load': load, 'unload': unload, 'h': h_value,
-            'gap': (max_u, max_difference), 'delta_y_max': delta_y_max,
-            'k': actuation_k}
+            'gap': (max_u, max_difference), 'delta_y_max': delta_y_max}
 
 
 class HysteresisWindow:
@@ -237,24 +227,16 @@ class HysteresisWindow:
         segments = read_segments(self.csv_path)
         result = latest_cycle(segments)
         self.draw(result)
-        k_now = result['k'] if result else (segments[-1][1] if segments else None)
-        k_label = (f'k = {k_now:g} N/mm' if k_now is not None else 'k non disponibile')
-        baseline_label = ('' if k_now is not None and
-                          abs(k_now - BASELINE_K_N_PER_MM) <= 1e-9
-                          else f' (baseline: k = {BASELINE_K_N_PER_MM:g})')
         if result is None:
-            self.metric.configure(text=f'H = in attesa del ciclo  |  {k_label}{baseline_label}',
+            self.metric.configure(text='H = in attesa del ramo di scarico',
                                   fg=COLORS['muted'])
         elif result['h'] is None:
-            self.metric.configure(
-                text=f'H = non calcolabile: intervallo u comune insufficiente  |  '
-                     f'{k_label}{baseline_label}', fg=COLORS['muted'])
+            self.metric.configure(text='H = non calcolabile: intervallo u comune insufficiente',
+                                  fg=COLORS['muted'])
         else:
             self.metric.configure(text=f"H = {result['h']:.2f}%  |  ΔYmax = "
-                                  f"{result['delta_y_max']:.3g} mm  |  "
-                                  f"{k_label}{baseline_label}",
-                                  fg=(COLORS['text'] if not baseline_label else
-                                      COLORS['difference']))
+                                  f"{result['delta_y_max']:.3g} mm",
+                                  fg=COLORS['text'])
         self.root.after(POLL_MS, self.refresh)
 
     def run(self):
